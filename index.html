@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Live Location Share (Firebase Modular)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    crossorigin=""
+  />
+  <style>
+    #map { height: 100vh; width: 100vw; }
+    #link { position: fixed; top: 10px; left: 10px; background: white; padding: 10px; z-index: 1000; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="link"></div>
+  <div id="map"></div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
+    import L from 'https://cdn.skypack.dev/leaflet';
+
+    // Your Firebase config (yours)
+    const firebaseConfig = {
+      apiKey: "AIzaSyDdKPNmsXTZn0ZwWtCPByBR7sFX-rhllHg",
+      authDomain: "locationsharing-67ac1.firebaseapp.com",
+      databaseURL: "https://locationsharing-67ac1-default-rtdb.firebaseio.com",
+      projectId: "locationsharing-67ac1",
+      storageBucket: "locationsharing-67ac1.firebasestorage.app",
+      messagingSenderId: "693067895439",
+      appId: "1:693067895439:web:35dd6cab2bfe122428d6fa",
+      measurementId: "G-8JNVJ0V8VV"
+    };
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const database = getDatabase(app);
+
+    // Parse or generate room id
+    const urlParams = new URLSearchParams(window.location.search);
+    let room = urlParams.get('room');
+    if (!room) {
+      room = Math.random().toString(36).substring(2, 8);
+      history.replaceState(null, '', '?room=' + room);
+    }
+
+    // Show shareable link
+    const linkDiv = document.getElementById('link');
+    linkDiv.textContent = `Share this link to share your location:\n${window.location.href}`;
+
+    // Setup Leaflet map
+    const map = L.map('map').setView([20, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+    let yourMarker = null;
+    let otherMarker = null;
+
+    // Update your location to Firebase
+    function updateLocationToFirebase(lat, lng) {
+      set(ref(database, `rooms/${room}/location`), {
+        lat,
+        lng,
+        timestamp: Date.now()
+      });
+    }
+
+    // Watch your position
+    if (navigator.geolocation) {
+      navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude, longitude } = pos.coords;
+          if (!yourMarker) {
+            yourMarker = L.marker([latitude, longitude], {title: "You"}).addTo(map);
+            map.setView([latitude, longitude], 15);
+          } else {
+            yourMarker.setLatLng([latitude, longitude]);
+          }
+          updateLocationToFirebase(latitude, longitude);
+        },
+        (err) => alert("Error getting location: " + err.message),
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
+      );
+    } else {
+      alert("Geolocation is not supported by your browser");
+    }
+
+    // Listen for location updates in this room
+    const locationRef = ref(database, `rooms/${room}/location`);
+    onValue(locationRef, (snapshot) => {
+      const data = snapshot.val();
+      if (!data) return;
+
+      // Skip update if it’s your own location (optional, you can remove this if you want)
+      if (yourMarker && yourMarker.getLatLng().lat === data.lat && yourMarker.getLatLng().lng === data.lng) {
+        return;
+      }
+
+      if (!otherMarker) {
+        otherMarker = L.marker([data.lat, data.lng], {
+          title: "Shared Location",
+          icon: L.icon({
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41]
+          })
+        }).addTo(map);
+        map.setView([data.lat, data.lng], 15);
+      } else {
+        otherMarker.setLatLng([data.lat, data.lng]);
+      }
+    });
+
+  </script>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+</body>
+</html>
