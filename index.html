@@ -100,21 +100,30 @@
       margin-left: 10px;
       font-style: italic;
     }
+    #errorMsg {
+      color: red;
+      font-weight: bold;
+      padding: 10px;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
 
   <div id="controls">
-    <input id="nameInput" type="text" placeholder="Enter your name" maxlength="20" />
-    <button id="startBtn">Start Sharing Location</button>
-    <div id="link" title="Click to copy link"></div>
-    <button id="copyBtn">Copy Link</button>
+    <input id="nameInput" type="text" placeholder="Enter your name" maxlength="20" style="display:none;" />
+    <button id="startBtn" style="display:none;">Start Sharing Location</button>
+    <button id="createRoomBtn">Create Room</button>
+    <div id="link" title="Click to copy link" style="display:none;"></div>
+    <button id="copyBtn" style="display:none;">Copy Link</button>
     <div id="status"></div>
   </div>
 
-  <div id="map"></div>
+  <div id="errorMsg"></div>
 
-  <div id="chat">
+  <div id="map" style="display:none;"></div>
+
+  <div id="chat" style="display:none;">
     <div id="messages"></div>
     <form id="chatForm">
       <input type="text" id="chatInput" placeholder="Type a message..." autocomplete="off" maxlength="200" />
@@ -122,234 +131,330 @@
     </form>
   </div>
 
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
-    import { getDatabase, ref, set, onValue, push, remove, serverTimestamp, update } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
-    import L from 'https://cdn.skypack.dev/leaflet';
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+  import { getDatabase, ref, set, onValue, push, remove, update, get } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
+  import L from 'https://cdn.skypack.dev/leaflet';
 
-    // Your Firebase config (update as needed)
-    const firebaseConfig = {
-      apiKey: "AIzaSyDdKPNmsXTZn0ZwWtCPByBR7sFX-rhllHg",
-      authDomain: "locationsharing-67ac1.firebaseapp.com",
-      databaseURL: "https://locationsharing-67ac1-default-rtdb.firebaseio.com",
-      projectId: "locationsharing-67ac1",
-      storageBucket: "locationsharing-67ac1.firebasestorage.app",
-      messagingSenderId: "693067895439",
-      appId: "1:693067895439:web:35dd6cab2bfe122428d6fa",
-      measurementId: "G-8JNVJ0V8VV"
-    };
+  const firebaseConfig = {
+    apiKey: "AIzaSyDdKPNmsXTZn0ZwWtCPByBR7sFX-rhllHg",
+    authDomain: "locationsharing-67ac1.firebaseapp.com",
+    databaseURL: "https://locationsharing-67ac1-default-rtdb.firebaseio.com",
+    projectId: "locationsharing-67ac1",
+    storageBucket: "locationsharing-67ac1.firebasestorage.app",
+    messagingSenderId: "693067895439",
+    appId: "1:693067895439:web:35dd6cab2bfe122428d6fa",
+    measurementId: "G-8JNVJ0V8VV"
+  };
 
-    // Initialize Firebase
-    const app = initializeApp(firebaseConfig);
-    const db = getDatabase(app);
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
 
-    // Parse or generate room id
+  // Elements
+  const linkDiv = document.getElementById('link');
+  const copyBtn = document.getElementById('copyBtn');
+  const startBtn = document.getElementById('startBtn');
+  const nameInput = document.getElementById('nameInput');
+  const statusDiv = document.getElementById('status');
+  const chatForm = document.getElementById('chatForm');
+  const chatInput = document.getElementById('chatInput');
+  const messagesDiv = document.getElementById('messages');
+  const controlsDiv = document.getElementById('controls');
+  const errorMsg = document.getElementById('errorMsg');
+  const createRoomBtn = document.getElementById('createRoomBtn');
+  const mapDiv = document.getElementById('map');
+  const chatDiv = document.getElementById('chat');
+
+  // Flags & variables
+  let room = null;
+  let isSharer = false;
+  let yourMarker = null;
+  let sharedMarker = null;
+  let watchId = null;
+  let userName = null;
+  const ROOM_EXPIRATION_MS = 60 * 60 * 1000;
+
+  function updateLink() {
+    const shareURL = window.location.origin + window.location.pathname + '?room=' + room;
+    linkDiv.textContent = shareURL;
+  }
+
+  copyBtn.onclick = () => {
+    navigator.clipboard.writeText(linkDiv.textContent).then(() => {
+      alert("Link copied to clipboard!");
+    });
+  };
+  linkDiv.onclick = copyBtn.onclick;
+
+  // Initialize Leaflet map
+  const map = L.map('map').setView([20, 0], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+  // Utils: Save ownership flag in localStorage
+  function setOwnerFlag(roomId) {
+    localStorage.setItem('room_owner_' + roomId, 'true');
+  }
+  function getOwnerFlag(roomId) {
+    return localStorage.getItem('room_owner_' + roomId) === 'true';
+  }
+
+  // Validate room existence & expiration from Firebase meta
+  async function validateRoom(roomId) {
+    const metaSnap = await get(ref(db, `rooms/${roomId}/meta`));
+    if (!metaSnap.exists()) return false;
+    const meta = metaSnap.val();
+    if (!meta.lastUpdate) return false;
+    if (Date.now() - meta.lastUpdate > ROOM_EXPIRATION_MS) return false;
+    return true;
+  }
+
+  // Clear room data if expired (same as before)
+  async function clearIfExpired(roomId) {
+    const metaRef = ref(db, `rooms/${roomId}/meta`);
+    onValue(metaRef, (snap) => {
+      const meta = snap.val();
+      if (meta && meta.lastUpdate && (Date.now() - meta.lastUpdate > ROOM_EXPIRATION_MS)) {
+        remove(ref(db, `rooms/${roomId}`));
+      }
+    }, { onlyOnce: true });
+  }
+
+  function updateMetaTimestamp() {
+    update(ref(db, `rooms/${room}/meta`), { lastUpdate: Date.now() });
+  }
+
+  function startSharing() {
+    userName = nameInput.value.trim();
+    if (!userName) {
+      alert("Please enter your name before sharing location.");
+      return;
+    }
+    isSharer = true;
+    startBtn.disabled = true;
+    nameInput.disabled = true;
+    statusDiv.textContent = "Sharing location...";
+    sharingLocation = true;
+
+    updateMetaTimestamp();
+
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.");
+      return;
+    }
+
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        if (!yourMarker) {
+          yourMarker = L.marker([latitude, longitude], {title: "You (Sharing)"}).addTo(map);
+          map.setView([latitude, longitude], 15);
+        } else {
+          yourMarker.setLatLng([latitude, longitude]);
+        }
+
+        set(ref(db, `rooms/${room}/location`), {
+          lat: latitude,
+          lng: longitude,
+          timestamp: Date.now(),
+          userName
+        });
+        updateMetaTimestamp();
+      },
+      (err) => alert("Error getting location: " + err.message),
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
+    );
+
+    // Save sharer name in DB
+    set(ref(db, `rooms/${room}/sharer`), userName);
+    updateMetaTimestamp();
+  }
+
+  // Initialize UI & logic based on URL room param
+  async function init() {
     const urlParams = new URLSearchParams(window.location.search);
-    let room = urlParams.get('room');
-    if (!room) {
-      room = Math.random().toString(36).substring(2, 8);
-      history.replaceState(null, '', '?room=' + room);
+    const roomParam = urlParams.get('room');
+
+    if (!roomParam) {
+      // No room in URL -> show create room button only
+      createRoomBtn.style.display = 'inline-block';
+      nameInput.style.display = 'none';
+      startBtn.style.display = 'none';
+      linkDiv.style.display = 'none';
+      copyBtn.style.display = 'none';
+      mapDiv.style.display = 'none';
+      chatDiv.style.display = 'none';
+      statusDiv.textContent = '';
+      errorMsg.textContent = '';
+      return;
     }
 
-    // Elements
-    const linkDiv = document.getElementById('link');
-    const copyBtn = document.getElementById('copyBtn');
-    const startBtn = document.getElementById('startBtn');
-    const nameInput = document.getElementById('nameInput');
-    const statusDiv = document.getElementById('status');
-    const chatForm = document.getElementById('chatForm');
-    const chatInput = document.getElementById('chatInput');
-    const messagesDiv = document.getElementById('messages');
+    room = roomParam;
 
-    // Show shareable link
-    function updateLink() {
-      const shareURL = window.location.origin + window.location.pathname + '?room=' + room;
-      linkDiv.textContent = shareURL;
+    // Validate room existence and expiration
+    const validRoom = await validateRoom(room);
+
+    if (!validRoom) {
+      // Invalid or expired room: show error and disable sharing/chat/map
+      errorMsg.textContent = 'This room does not exist or has expired.';
+      createRoomBtn.style.display = 'inline-block';
+      nameInput.style.display = 'none';
+      startBtn.style.display = 'none';
+      linkDiv.style.display = 'none';
+      copyBtn.style.display = 'none';
+      mapDiv.style.display = 'none';
+      chatDiv.style.display = 'none';
+      statusDiv.textContent = '';
+      return;
     }
+
+    errorMsg.textContent = '';
+
+    // Show link & copy button
+    linkDiv.style.display = 'inline-block';
+    copyBtn.style.display = 'inline-block';
     updateLink();
 
-    copyBtn.onclick = () => {
-      navigator.clipboard.writeText(linkDiv.textContent).then(() => {
-        alert("Link copied to clipboard!");
-      });
-    };
-    linkDiv.onclick = copyBtn.onclick;
+    // Show map and chat
+    mapDiv.style.display = 'block';
+    chatDiv.style.display = 'flex';
 
-    // Initialize map
-    const map = L.map('map').setView([20, 0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+    // Check ownership
+    const ownerFlag = getOwnerFlag(room);
+    if (ownerFlag) {
+      // Owner sees Start Sharing Location & name input (pre-fill name if stored)
+      createRoomBtn.style.display = 'none';
+      nameInput.style.display = 'inline-block';
+      startBtn.style.display = 'inline-block';
+      const storedName = localStorage.getItem('room_owner_name_' + room);
+      if (storedName) {
+        nameInput.value = storedName;
+      }
+      statusDiv.textContent = 'You are the owner of this room.';
+    } else {
+      // Non-owner can only see the map & chat, no start sharing
+      createRoomBtn.style.display = 'none';
+      nameInput.style.display = 'none';
+      startBtn.style.display = 'none';
+      statusDiv.textContent = 'You are a viewer in this room.';
+    }
 
-    // Markers
-    let yourMarker = null;
-    let sharedMarker = null;
+    setupListeners();
+    loadSharedLocationAndChat();
+  }
 
-    // Flags
-    let sharingLocation = false;
-    let watchId = null;
-    let userName = null;
-    let isSharer = false;
+  // Create new room & redirect to it
+  async function createRoom() {
+    const newRoom = generateRoomId();
+    room = newRoom;
 
-    // Auto-expire room after 1 hour from last update
-    const ROOM_EXPIRATION_MS = 60 * 60 * 1000;
+    // Set room metadata in DB
+    await set(ref(db, `rooms/${room}/meta`), { created: Date.now(), lastUpdate: Date.now() });
 
-    // Clear old room data on load if expired
-    async function clearIfExpired() {
-      const metaRef = ref(db, `rooms/${room}/meta`);
-      onValue(metaRef, (snap) => {
-        const meta = snap.val();
-        if (meta && meta.lastUpdate && (Date.now() - meta.lastUpdate > ROOM_EXPIRATION_MS)) {
-          remove(ref(db, `rooms/${room}`));
+    // Save owner flag in localStorage
+    setOwnerFlag(room);
+
+    // Save owner name blank initially
+    localStorage.setItem('room_owner_name_' + room, '');
+
+    // Redirect to room URL
+    window.location.search = '?room=' + room;
+  }
+
+  // Generate random room id (6 alphanumeric chars)
+  function generateRoomId() {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let id = '';
+    for (let i=0; i<6; i++) {
+      id += chars.charAt(Math.floor(Math.random()*chars.length));
+    }
+    return id;
+  }
+
+  // Setup realtime listeners for location & chat
+  function setupListeners() {
+    const locRef = ref(db, `rooms/${room}/location`);
+    onValue(locRef, (snapshot) => {
+      const loc = snapshot.val();
+      if (loc && !isSharer) {
+        if (!sharedMarker) {
+          sharedMarker = L.marker([loc.lat, loc.lng], {title: loc.userName || "Shared Location", icon: L.icon({iconUrl: 'https://leafletjs.com/examples/custom-icons/leaf-green.png', iconSize: [38, 95]})}).addTo(map);
+          map.setView([loc.lat, loc.lng], 15);
+        } else {
+          sharedMarker.setLatLng([loc.lat, loc.lng]);
         }
-      }, { onlyOnce: true });
-    }
-    clearIfExpired();
-
-    // Update meta timestamp
-    function updateMetaTimestamp() {
-      update(ref(db, `rooms/${room}/meta`), { lastUpdate: Date.now() });
-    }
-
-    // Location sharing function
-    function startSharing() {
-      userName = nameInput.value.trim();
-      if (!userName) {
-        alert("Please enter your name before sharing location.");
-        return;
-      }
-      isSharer = true;
-      sharingLocation = true;
-      startBtn.disabled = true;
-      nameInput.disabled = true;
-      statusDiv.textContent = "Sharing location...";
-
-      // Remove chat messages and location on room clear on expiration
-      updateMetaTimestamp();
-
-      if (!navigator.geolocation) {
-        alert("Geolocation is not supported by your browser.");
-        return;
-      }
-
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          const { latitude, longitude } = pos.coords;
-          if (!yourMarker) {
-            yourMarker = L.marker([latitude, longitude], {title: "You (Sharing)"}).addTo(map);
-            map.setView([latitude, longitude], 15);
-          } else {
-            yourMarker.setLatLng([latitude, longitude]);
-          }
-
-          // Update location in Firebase
-          set(ref(db, `rooms/${room}/location`), {
-            lat: latitude,
-            lng: longitude,
-            timestamp: Date.now(),
-            userName
-          });
-          updateMetaTimestamp();
-        },
-        (err) => alert("Error getting location: " + err.message),
-        { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
-      );
-
-      // Indicate in DB who is sharer
-      set(ref(db, `rooms/${room}/sharer`), userName);
-      updateMetaTimestamp();
-    }
-
-    startBtn.onclick = startSharing;
-
-    // Listen for shared location (only one sharer allowed)
-    const locationRef = ref(db, `rooms/${room}/location`);
-    onValue(locationRef, (snap) => {
-      const data = snap.val();
-      if (!data) {
-        if (sharedMarker) {
-          map.removeLayer(sharedMarker);
-          sharedMarker = null;
-        }
-        return;
-      }
-
-      if (isSharer) {
-        // Ignore your own location updates
-        return;
-      }
-
-      const { lat, lng, userName: sharerName } = data;
-
-      if (!sharedMarker) {
-        sharedMarker = L.marker([lat, lng], {
-          title: `${sharerName} (Sharing)`,
-          icon: L.icon({
-            iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png',
-            iconSize: [25, 41],
-            iconAnchor: [12, 41]
-          })
-        }).addTo(map);
-        map.setView([lat, lng], 15);
-      } else {
-        sharedMarker.setLatLng([lat, lng]);
       }
     });
 
-    // Chat logic
-    // We store messages under rooms/{room}/chat/
+    // Chat listeners
     const chatRef = ref(db, `rooms/${room}/chat`);
-
-    // Show new messages
-    onValue(chatRef, (snap) => {
-      const data = snap.val();
+    onValue(chatRef, (snapshot) => {
       messagesDiv.innerHTML = '';
-      if (!data) return;
-      // Sort messages by timestamp ascending
-      const msgs = Object.values(data).sort((a,b) => a.timestamp - b.timestamp);
-      for (const msg of msgs) {
+      const val = snapshot.val();
+      if (!val) return;
+      const keys = Object.keys(val).sort((a,b) => val[a].timestamp - val[b].timestamp);
+      for (const k of keys) {
+        const msg = val[k];
         const div = document.createElement('div');
-        div.className = 'message';
+        div.classList.add('message');
         const userSpan = document.createElement('span');
-        userSpan.className = 'user';
-        userSpan.textContent = msg.userName + ':';
+        userSpan.classList.add('user');
+        userSpan.textContent = msg.user + ':';
         div.appendChild(userSpan);
         const textSpan = document.createElement('span');
-        textSpan.textContent = msg.text;
+        textSpan.textContent = ' ' + msg.text;
         div.appendChild(textSpan);
         messagesDiv.appendChild(div);
       }
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
     });
+  }
 
-    chatForm.addEventListener('submit', e => {
-      e.preventDefault();
-      const text = chatInput.value.trim();
-      const chatUser = nameInput.value.trim();
-      if (!text) return;
-      if (!chatUser) {
-        alert("Please enter your name before chatting.");
-        return;
-      }
+  // Load chat form handlers
+  chatForm.addEventListener('submit', e => {
+    e.preventDefault();
+    if (!room) return;
+    const text = chatInput.value.trim();
+    if (!text) return;
+    const user = nameInput.style.display === 'inline-block' ? (nameInput.value.trim() || "Anonymous") : "Viewer";
+    const chatRef = ref(db, `rooms/${room}/chat`);
+    push(chatRef, { user, text, timestamp: Date.now() });
+    chatInput.value = '';
+  });
 
-      // Push message
-      push(chatRef, {
-        text,
-        userName: chatUser,
-        timestamp: Date.now()
-      });
+  // On clicking Start Sharing Location
+  startBtn.onclick = () => {
+    if (!room) return alert("No room is selected.");
+    userName = nameInput.value.trim();
+    if (!userName) return alert("Please enter your name.");
+    localStorage.setItem('room_owner_name_' + room, userName);
+    startSharing();
+  };
 
-      chatInput.value = '';
+  // Create Room button handler
+  createRoomBtn.onclick = () => {
+    createRoomBtn.disabled = true;
+    createRoom().catch(e => {
+      alert("Failed to create room: " + e.message);
+      createRoomBtn.disabled = false;
     });
+  };
 
-    // When page unloads, if sharing location, remove location & sharer from DB
-    window.addEventListener('beforeunload', () => {
-      if (isSharer) {
-        if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-        remove(ref(db, `rooms/${room}/location`));
-        remove(ref(db, `rooms/${room}/sharer`));
-      }
-    });
-  </script>
+  // Load shared location and chat when joining as viewer
+  function loadSharedLocationAndChat() {
+    // Nothing else needed; listeners already set up in init
+  }
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  // Initialize the app on page load
+  window.onload = () => {
+    init();
+  };
+
+  // Clear expired rooms periodically
+  if (room) clearIfExpired(room);
+
+</script>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
 </body>
 </html>
