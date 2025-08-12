@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Live Location Share with Chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    crossorigin=""
+  />
+  <style>
+    body, html {
+      margin: 0; padding: 0; height: 100%;
+      font-family: Arial, sans-serif;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    #map { flex: 1; }
+    #controls {
+      background: #f9f9f9;
+      padding: 10px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      transition: all 0.3s ease;
+      position: relative;
+    }
+    #link {
+      flex: 1 1 300px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+      user-select: all;
+      border: 1px solid #ccc;
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: #fff;
+    }
+    button {
+      background-color: #007bff;
+      border: none;
+      color: white;
+      padding: 7px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      user-select: none;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    #chat {
+      height: 200px;
+      border-top: 1px solid #ddd;
+      display: flex;
+      flex-direction: column;
+      background: #fafafa;
+      transition: all 0.3s ease;
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      font-size: 14px;
+      border-bottom: 1px solid #ddd;
+    }
+    #messages .message {
+      margin-bottom: 6px;
+    }
+    #messages .message .user {
+      font-weight: bold;
+      margin-right: 6px;
+      color: #007bff;
+    }
+    #chatForm {
+      display: flex;
+      padding: 6px;
+    }
+    #chatForm input[type=text] {
+      flex: 1;
+      padding: 6px;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    #chatForm button {
+      margin-left: 6px;
+      padding: 6px 14px;
+      font-size: 14px;
+    }
+    #nameInput {
+      width: 160px;
+      padding: 6px 8px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+    #status {
+      font-size: 12px;
+      color: green;
+      margin-left: 10px;
+      font-style: italic;
+    }
+    #errorMsg {
+      color: red;
+      font-weight: bold;
+      padding: 10px;
+      text-align: center;
+    }
+    /* Hide UI in full map mode */
+    .hidden-ui {
+      display: none !important;
+    }
+    /* Join Requests Modal */
+    #joinRequestsModal {
+      position: absolute;
+      top: 45px;
+      right: 10px;
+      background: white;
+      border: 1px solid #ccc;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      padding: 10px;
+      max-width: 300px;
+      max-height: 300px;
+      overflow-y: auto;
+      z-index: 9999;
+      display: none;
+      border-radius: 6px;
+    }
+    #joinRequestsModal h3 {
+      margin-top: 0;
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+    .request-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      padding: 4px 6px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: #f9f9f9;
+    }
+    .request-name {
+      font-weight: bold;
+      flex: 1;
+      user-select: text;
+    }
+    .request-buttons button {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      font-weight: bold;
+      border: none;
+      margin-left: 6px;
+      cursor: pointer;
+      color: white;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0;
+      user-select: none;
+    }
+    .btn-accept {
+      background-color: #28a745;
+    }
+    .btn-accept:hover {
+      background-color: #1e7e34;
+    }
+    .btn-decline {
+      background-color: #dc3545;
+    }
+    .btn-decline:hover {
+      background-color: #a71d2a;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="controls">
+    <input id="nameInput" type="text" placeholder="Enter your name" maxlength="20" />
+    <button id="startBtn" style="display:none;">Start Sharing Location</button>
+    <button id="joinBtn" style="display:none;">Join Room</button>
+    <button id="createRoomBtn">Create Room</button>
+    <div id="link" title="Click to copy link" style="display:none;"></div>
+    <button id="copyBtn" style="display:none;">Copy Link</button>
+    <button id="fullMapBtn" style="display:none;">Full Map View</button>
+    <button id="unhideBtn" style="display:none;">Unhide UI</button>
+    <button id="joinRequestsBtn" style="display:none;">Join Requests</button>
+    <div id="status"></div>
+
+    <div id="joinRequestsModal">
+      <h3>Join Requests</h3>
+      <div id="joinRequestsList">
+        <!-- Dynamic list -->
+      </div>
+    </div>
+  </div>
+
+  <div id="errorMsg"></div>
+
+  <div id="map" style="display:none;"></div>
+
+  <div id="chat" style="display:none;">
+    <div id="messages"></div>
+    <form id="chatForm">
+      <input type="text" id="chatInput" placeholder="Type a message..." autocomplete="off" maxlength="200" />
+      <button type="submit">Send</button>
+    </form>
+  </div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+  import { getDatabase, ref, set, onValue, push, remove, update, get } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
+  import L from 'https://cdn.skypack.dev/leaflet';
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDdKPNmsXTZn0ZwWtCPByBR7sFX-rhllHg",
+    authDomain: "locationsharing-67ac1.firebaseapp.com",
+    databaseURL: "https://locationsharing-67ac1-default-rtdb.firebaseio.com",
+    projectId: "locationsharing-67ac1",
+    storageBucket: "locationsharing-67ac1.firebasestorage.app",
+    messagingSenderId: "693067895439",
+    appId: "1:693067895439:web:35dd6cab2bfe122428d6fa",
+    measurementId: "G-8JNVJ0V8VV"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  // Elements
+  const linkDiv = document.getElementById('link');
+  const copyBtn = document.getElementById('copyBtn');
+  const startBtn = document.getElementById('startBtn');
+  const joinBtn = document.getElementById('joinBtn');
+  const nameInput = document.getElementById('nameInput');
+  const statusDiv = document.getElementById('status');
+  const chatForm = document.getElementById('chatForm');
+  const chatInput = document.getElementById('chatInput');
+  const messagesDiv = document.getElementById('messages');
+  const controlsDiv = document.getElementById('controls');
+  const errorMsg = document.getElementById('errorMsg');
+  const createRoomBtn = document.getElementById('createRoomBtn');
+  const fullMapBtn = document.getElementById('fullMapBtn');
+  const unhideBtn = document.getElementById('unhideBtn');
+  const joinRequestsBtn = document.getElementById('joinRequestsBtn');
+  const joinRequestsModal = document.getElementById('joinRequestsModal');
+  const joinRequestsList = document.getElementById('joinRequestsList');
+  const mapDiv = document.getElementById('map');
+  const chatDiv = document.getElementById('chat');
+
+  let map, userMarker;
+  let room = null;
+  let userName = null;
+  let isOwner = false;
+  let joinRequestKey = null;
+  let isJoined = false;
+  let joinRequestRef = null;
+  let joinRequestsListener = null;
+
+  // Utility: get room ID from URL hash
+  function getRoomFromHash() {
+    return location.hash ? location.hash.substring(1) : null;
+  }
+
+  // Utility: update URL hash
+  function updateHash(newRoom) {
+    location.hash = newRoom;
+  }
+
+  // Generate random room ID
+  function generateRoomId() {
+    return Math.random().toString(36).substring(2, 10);
+  }
+
+  // Show error
+  function showError(msg) {
+    errorMsg.textContent = msg;
+    setTimeout(() => { errorMsg.textContent = ''; }, 5000);
+  }
+
+  // Initialize map
+  function initMap() {
+    mapDiv.style.display = 'block';
+    if (!map) {
+      map = L.map('map').setView([0,0], 2);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap'
+      }).addTo(map);
+    }
+  }
+
+  // Update share link display
+  function updateLink() {
+    const url = location.origin + location.pathname + '#' + room;
+    linkDiv.textContent = url;
+    linkDiv.title = 'Click to copy: ' + url;
+    linkDiv.style.display = 'inline-block';
+    copyBtn.style.display = 'inline-block';
+  }
+
+  // Copy link to clipboard
+  copyBtn.onclick = () => {
+    navigator.clipboard.writeText(linkDiv.textContent).then(() => {
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
+    });
+  };
+
+  // Full map / unhide toggles
+  fullMapBtn.onclick = () => {
+    controlsDiv.style.display = 'none';
+    chatDiv.style.display = 'none';
+    mapDiv.style.height = '100vh';
+    fullMapBtn.style.display = 'none';
+    unhideBtn.style.display = 'inline-block';
+  };
+  unhideBtn.onclick = () => {
+    controlsDiv.style.display = 'flex';
+    chatDiv.style.display = 'flex';
+    mapDiv.style.height = '';
+    fullMapBtn.style.display = 'inline-block';
+    unhideBtn.style.display = 'none';
+  };
+
+  // Create a new room and become owner
+  createRoomBtn.onclick = () => {
+    room = generateRoomId();
+    updateHash(room);
+    isOwner = true;
+    setupOwnerUI();
+    initMap();
+    updateLink();
+    createRoomBtn.style.display = 'none';
+    nameInput.style.display = 'none';
+    joinBtn.style.display = 'none';
+    startBtn.style.display = 'inline-block';
+    statusDiv.textContent = 'Room created. Share the link to invite others.';
+  };
+
+  // Owner UI setup
+  function setupOwnerUI() {
+    joinRequestsBtn.style.display = 'inline-block';
+    joinRequestsBtn.onclick = toggleJoinRequestsModal;
+
+    listenForJoinRequests();
+  }
+
+  // Listen to join requests (owner)
+  function listenForJoinRequests() {
+    const requestsRef = ref(db, `rooms/${room}/joinRequests`);
+    joinRequestsListener = onValue(requestsRef, (snapshot) => {
+      const reqs = snapshot.val();
+      joinRequestsList.innerHTML = '';
+      if (!reqs) {
+        joinRequestsList.innerHTML = '<em>No join requests</em>';
+        return;
+      }
+      let pendingCount = 0;
+      Object.entries(reqs).forEach(([key, req]) => {
+        if (req.status === 'pending') {
+          pendingCount++;
+          const div = document.createElement('div');
+          div.className = 'request-item';
+
+          const nameSpan = document.createElement('span');
+          nameSpan.className = 'request-name';
+          nameSpan.textContent = req.name;
+
+          const buttonsDiv = document.createElement('div');
+          buttonsDiv.className = 'request-buttons';
+
+          const acceptBtn = document.createElement('button');
+          acceptBtn.className = 'btn-accept';
+          acceptBtn.title = 'Approve';
+          acceptBtn.textContent = '✓';
+          acceptBtn.onclick = () => approveRequest(key);
+
+          const declineBtn = document.createElement('button');
+          declineBtn.className = 'btn-decline';
+          declineBtn.title = 'Deny';
+          declineBtn.textContent = '✗';
+          declineBtn.onclick = () => denyRequest(key);
+
+          buttonsDiv.appendChild(declineBtn);
+          buttonsDiv.appendChild(acceptBtn);
+
+          div.appendChild(nameSpan);
+          div.appendChild(buttonsDiv);
+
+          joinRequestsList.appendChild(div);
+        }
+      });
+      if (pendingCount === 0) {
+        joinRequestsList.innerHTML = '<em>No join requests</em>';
+      }
+    });
+  }
+
+  // Toggle join requests modal
+  function toggleJoinRequestsModal() {
+    if (joinRequestsModal.style.display === 'none' || joinRequestsModal.style.display === '') {
+      joinRequestsModal.style.display = 'block';
+    } else {
+      joinRequestsModal.style.display = 'none';
+    }
+  }
+
+  // Approve a join request (owner)
+  function approveRequest(key) {
+    update(ref(db, `rooms/${room}/joinRequests/${key}`), { status: 'approved' });
+  }
+
+  // Deny a join request (owner)
+  function denyRequest(key) {
+    update(ref(db, `rooms/${room}/joinRequests/${key}`), { status: 'denied' });
+  }
+
+  // Join room button click (for viewers)
+  joinBtn.onclick = () => {
+    userName = nameInput.value.trim();
+    if (!userName) {
+      alert('Please enter your name before joining.');
+      return;
+    }
+    statusDiv.style.color = 'green';
+    statusDiv.textContent = 'Waiting to be let in...';
+    joinBtn.disabled = true;
+    nameInput.disabled = true;
+
+    const reqId = Date.now() + '_' + userName.replace(/\s+/g, '_');
+    joinRequestKey = reqId;
+    joinRequestRef = ref(db, `rooms/${room}/joinRequests/${joinRequestKey}`);
+
+    set(joinRequestRef, { name: userName, status: 'pending' }).then(() => {
+      // Listen for status update
+      onValue(joinRequestRef, (snapshot) => {
+        if (!snapshot.exists()) return;
+        const data = snapshot.val();
+        if (data.status === 'approved' && !isJoined) {
+          statusDiv.style.color = 'green';
+          statusDiv.textContent = 'Approved! Joining room...';
+          joinRequestRef = null;
+          joinRequestKey = null;
+          joinBtn.style.display = 'none';
+          nameInput.style.display = 'none';
+          startJoinedUser();
+        } else if (data.status === 'denied' && !isJoined) {
+          statusDiv.style.color = 'red';
+          statusDiv.textContent = 'Sorry, you cannot join this room.';
+          joinBtn.disabled = false;
+          nameInput.disabled = false;
+        }
+      });
+    }).catch((err) => {
+      showError('Error sending join request: ' + err.message);
+      joinBtn.disabled = false;
+      nameInput.disabled = false;
+      statusDiv.textContent = '';
+    });
+  };
+
+  // Start UI and logic for joined user (viewer)
+  function startJoinedUser() {
+    isJoined = true;
+    initMap();
+    chatDiv.style.display = 'flex';
+    statusDiv.textContent = 'You have joined the room.';
+    fullMapBtn.style.display = 'inline-block';
+    unhideBtn.style.display = 'none';
+
+    setupChat();
+    setupLocationSharing();
+  }
+
+  // Setup chat listeners and send
+  function setupChat() {
+    const chatRef = ref(db, `rooms/${room}/chat`);
+    onValue(chatRef, (snapshot) => {
+      const chatMessages = snapshot.val();
+      messagesDiv.innerHTML = '';
+      if (!chatMessages) return;
+      Object.entries(chatMessages).forEach(([key, msg]) => {
+        const div = document.createElement('div');
+        div.className = 'message';
+        div.innerHTML = `<span class="user">${msg.name}:</span> ${msg.text}`;
+        messagesDiv.appendChild(div);
+      });
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    });
+
+    chatForm.onsubmit = (e) => {
+      e.preventDefault();
+      const text = chatInput.value.trim();
+      if (!text) return;
+      const newMsgRef = push(ref(db, `rooms/${room}/chat`));
+      set(newMsgRef, {
+        name: userName,
+        text: text,
+        timestamp: Date.now()
+      });
+      chatInput.value = '';
+    };
+  }
+
+  // Setup location sharing for joined user (viewer)
+  function setupLocationSharing() {
+    if (!navigator.geolocation) {
+      showError('Geolocation is not supported by your browser.');
+      return;
+    }
+    navigator.geolocation.watchPosition((pos) => {
+      const latlng = [pos.coords.latitude, pos.coords.longitude];
+      if (!userMarker) {
+        userMarker = L.marker(latlng).addTo(map).bindPopup(userName).openPopup();
+        map.setView(latlng, 14);
+      } else {
+        userMarker.setLatLng(latlng);
+      }
+      set(ref(db, `rooms/${room}/locations/${userName}`), {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        timestamp: Date.now()
+      });
+    }, (err) => {
+      showError('Error getting location: ' + err.message);
+    }, {
+      enableHighAccuracy: true,
+      maximumAge: 10000,
+      timeout: 10000
+    });
+
+    // Listen for others locations and update markers
+    const locRef = ref(db, `rooms/${room}/locations`);
+    onValue(locRef, (snapshot) => {
+      const locations = snapshot.val() || {};
+      Object.entries(locations).forEach(([name, loc]) => {
+        if (name === userName) return; // skip own marker here
+        let marker = map._layers ? Object.values(map._layers).find(m => m.options && m.options.title === name) : null;
+        if (!marker) {
+          marker = L.marker([loc.lat, loc.lng], {title: name}).addTo(map).bindPopup(name);
+          // Store marker in map layers for reuse
+          map._layers[Object.keys(map._layers).length] = marker;
+        } else {
+          marker.setLatLng([loc.lat, loc.lng]);
+        }
+      });
+    });
+  }
+
+  // Setup UI for owner on page load (if room in URL)
+  function setupExistingOwner(roomId) {
+    room = roomId;
+    isOwner = true;
+    updateLink();
+    setupOwnerUI();
+    initMap();
+
+    createRoomBtn.style.display = 'none';
+    nameInput.style.display = 'none';
+    joinBtn.style.display = 'none';
+    startBtn.style.display = 'inline-block';
+
+    statusDiv.textContent = 'You are the owner of this room.';
+  }
+
+  // Setup UI for viewer on page load (if room in URL)
+  function setupExistingViewer(roomId) {
+    room = roomId;
+    updateLink();
+    statusDiv.textContent = 'Enter your name and request to join the room.';
+    createRoomBtn.style.display = 'none';
+    startBtn.style.display = 'none';
+  }
+
+  // On page load
+  window.onload = () => {
+    room = getRoomFromHash();
+    if (room) {
+      // Check if user is owner (by stored flag in localStorage)
+      const ownerKey = `room_${room}_owner`;
+      if (localStorage.getItem(ownerKey) === 'true') {
+        setupExistingOwner(room);
+      } else {
+        setupExistingViewer(room);
+      }
+    } else {
+      statusDiv.textContent = 'Create a new room or join an existing one.';
+    }
+  };
+
+  // Start button click (owner)
+  startBtn.onclick = () => {
+    localStorage.setItem(`room_${room}_owner`, 'true');
+    statusDiv.textContent = 'Room started. Waiting for join requests.';
+    startBtn.style.display = 'none';
+    fullMapBtn.style.display = 'inline-block';
+    unhideBtn.style.display = 'none';
+  };
+
+  // Error message div
+  const errorMsg = document.getElementById('errorMsg');
+
+</script>
+</body>
+</html>
